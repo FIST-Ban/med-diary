@@ -69,6 +69,7 @@
     memoQuery: '',
     exportFrom: null,
     exportTo: null,
+    justTaken: null, // 방금 기록한 약 — 도장·캡슐 애니메이션을 이때 한 번만 보여 준다
   };
 
   // ---------- 작은 도구 ----------
@@ -87,16 +88,59 @@
     return S.keyOf(at) === key ? fmtTime(rec.at) : `${S.fmtShort(S.keyOf(at))}에 기록`;
   }
 
-  // 화면의 동그라미 배지에는 숫자만 넣는다(①은 글 요약용)
-  const medNo = (i, small = false) =>
-    `<span class="med-no${small ? ' small' : ''}" aria-hidden="true">${i + 1}</span>`;
+  // 약마다 색을 하나씩 정해 준다(등록 순서대로). 캡슐 아이콘·진행 표시에 쓴다.
+  const toneOf = (i) => `tone-${i % 6}`;
+
+  // 비스듬한 캡슐. 색은 감싼 요소의 --tone, --tone-soft 를 따른다.
+  const capsuleSvg = (cls = '') =>
+    `<svg class="capsule${cls ? ` ${cls}` : ''}" viewBox="0 0 24 24" aria-hidden="true"><g transform="rotate(-45 12 12)"><rect class="capsule-b" x="2.5" y="7.5" width="19" height="9" rx="4.5"/><path class="capsule-a" d="M12 7.5h5a4.5 4.5 0 0 1 0 9h-5z"/></g></svg>`;
+
+  // 약 아이콘: 그 약의 색 캡슐 + 몇 번째 약인지 작은 숫자
+  const medIcon = (i, small = false) =>
+    `<span class="med-icon ${toneOf(i)}${small ? ' small' : ''}" aria-hidden="true">${capsuleSvg()}<b>${i + 1}</b></span>`;
+
+  // 먹을 알 수만큼 캡슐을 늘어놓는다(반 알은 반쪽). 6알이 넘으면 숫자만 보여 준다.
+  function pillIcons(n) {
+    if (!(n > 0) || n > 6) return '';
+    const whole = Math.floor(n);
+    const half = n - whole >= 0.5;
+    return `<span class="pill-icons" aria-hidden="true">${capsuleSvg().repeat(whole)}${half ? capsuleSvg('is-half') : ''}</span>`;
+  }
+
+  // 웃는 캡슐 친구. happy 다 먹은 날 · calm 보통 · sleepy 먹을 약이 없을 때
+  function mascot(mood = 'calm', size = 72) {
+    const eyes = {
+      happy: '<path class="m-line" d="M23.5 38.5q2.5-3.4 5 0M35.5 38.5q2.5-3.4 5 0"/>',
+      calm: '<circle class="m-ink" cx="26" cy="37.5" r="2.4"/><circle class="m-ink" cx="38" cy="37.5" r="2.4"/>',
+      sleepy: '<path class="m-line" d="M23.5 37.5h5M35.5 37.5h5"/>',
+    }[mood];
+    const mouth = mood === 'happy' ? '<path class="m-mouth" d="M28 42.5q4 5.2 8 0z"/>' : '<path class="m-line" d="M29.5 43q2.5 2.4 5 0"/>';
+    return `<svg class="mascot" width="${size}" height="${size}" viewBox="0 0 64 64" aria-hidden="true"><g transform="rotate(-12 32 32)">
+      <rect class="m-body" x="16" y="4" width="32" height="56" rx="16"/>
+      <path class="m-top" d="M16 30V20a16 16 0 0 1 32 0v10z"/>
+      <rect class="m-outline" x="16" y="4" width="32" height="56" rx="16"/>
+      <rect class="m-shine" x="22" y="10" width="5" height="12" rx="2.5"/>
+      ${eyes}
+      <ellipse class="m-cheek" cx="21.5" cy="43" rx="3.2" ry="2"/><ellipse class="m-cheek" cx="42.5" cy="43" rx="3.2" ry="2"/>
+      ${mouth}
+    </g></svg>`;
+  }
+
+  function greeting(now = new Date()) {
+    const h = now.getHours();
+    if (h >= 5 && h < 11) return '좋은 아침이에요';
+    if (h >= 11 && h < 17) return '좋은 오후예요';
+    if (h >= 17 && h < 22) return '편안한 저녁이에요';
+    return '오늘도 수고했어요';
+  }
 
   // 2026.09.29 ~ 10.05 처럼 같은 해면 뒤쪽 연도를 줄인다
   const fmtRange = (a, b) => `${S.fmtDate(a)} ~ ${a.slice(0, 4) === b.slice(0, 4) ? S.fmtDate(b).slice(5) : S.fmtDate(b)}`;
 
+  // 루틴 단계 한 줄: 단계 번호 동그라미 + 하루 알 수 + 날짜
   function phaseItem(med, r) {
-    const dose = r.pills > 0 ? `하루 ${S.fmtPills(r.pills)}` : '휴약 (안 먹음)';
-    return `<strong>${r.index + 1}단계 · ${dose}</strong><span>${fmtRange(r.startKey, r.endKey)} · ${S.fmtPhaseLength(med.phases[r.index])}</span>`;
+    const dose = r.pills > 0 ? `하루 ${S.fmtPills(r.pills)}` : '쉬는 기간 (휴약)';
+    return `<span class="step-no">${r.index + 1}<span class="sr">단계</span></span><span class="step-body"><strong>${dose}</strong><span>${fmtRange(r.startKey, r.endKey)} · ${S.fmtPhaseLength(med.phases[r.index])}</span></span>`;
   }
 
   const STATUS_LABEL = {
@@ -136,10 +180,11 @@
   }
 
   // 예/아니오를 한 번 더 묻는다. 바깥을 누르거나 Esc 는 '아니오'.
-  function confirmDialog({ title, message = '', yes = '예', no = '아니오', danger = false }) {
+  function confirmDialog({ title, message = '', yes = '예', no = '아니오', danger = false, art = '' }) {
     return new Promise((resolve) => {
       const { el, close } = openModal(`
         <div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="m-title">
+          ${art ? `<div class="modal-art">${art}</div>` : ''}
           <h2 id="m-title">${esc(title)}</h2>
           ${message ? `<p class="modal-text">${esc(message)}</p>` : ''}
           <div class="modal-actions">
@@ -199,14 +244,17 @@
     const ok = await confirmDialog({
       title: `${med.name} ${S.fmtPills(pills)} 드셨나요?`,
       message: key === t ? '' : `${S.fmtLong(key)} 기록으로 남겨요.`,
+      art: `<span class="take-art ${toneOf(medIndex(medId))}">${pillIcons(pills) || capsuleSvg()}</span>`,
     });
     if (!ok) return;
     if (!data.logs[key]) data.logs[key] = {};
     data.logs[key][medId] = { pills, at: new Date().toISOString() };
     if (!save()) return;
+    ui.justTaken = medId;
     render();
+    ui.justTaken = null;
     if (S.dayStatus(data, key, t) === 'done') {
-      toast(key === t ? '오늘치 약 복용 완료!' : `${S.fmtLong(key)} 복용 완료`);
+      toast(key === t ? '🎉 오늘치 약 복용 완료!' : `${S.fmtLong(key)} 복용 완료`);
     }
   }
 
@@ -263,6 +311,7 @@
     if (!data.meds.length) {
       return `
         <section class="empty">
+          ${mascot('sleepy', 96)}
           <p>아직 등록한 약이 없어요.</p>
           <button type="button" class="btn btn-primary" data-action="go" data-view="meds">약 등록하러 가기</button>
         </section>`;
@@ -273,30 +322,42 @@
     const due = rows.filter((r) => r.phase && r.phase.pills > 0);
     const rest = rows.filter((r) => !(r.phase && r.phase.pills > 0));
     const taken = due.filter((r) => log[r.med.id]).length;
+    const done = status === 'done';
 
-    const headline =
-      status === 'done' ? '오늘치 약 복용 완료' : due.length ? `오늘 먹을 약 ${due.length}가지` : '오늘은 먹을 약이 없어요';
+    const sub = done
+      ? '오늘도 잘 챙겼어요. 최고예요!'
+      : due.length
+        ? `오늘 먹을 약 ${due.length}가지 중 ${taken}가지 먹었어요`
+        : '오늘은 먹을 약이 없어요. 푹 쉬어요';
+    // 오늘 먹을 약마다 캡슐 하나. 먹은 약은 색이 채워진다.
+    const dots = due
+      .map((r) => `<span class="dot ${toneOf(r.i)}${log[r.med.id] ? ' is-on' : ''}${ui.justTaken === r.med.id ? ' is-new' : ''}">${capsuleSvg()}</span>`)
+      .join('');
 
     const dueCards = due
       .map(({ med, i, phase }) => {
         const rec = log[med.id];
         const next = nextChangeText(med, t);
+        const info = [med.dose, phaseText(med, phase)].filter(Boolean).join(' · ');
         return `
-        <article class="card med-card${rec ? ' is-taken' : ''}">
+        <article class="card med-card ${toneOf(i)}${rec ? ' is-taken' : ''}">
           <div class="med-card__head">
-            ${medNo(i)}
+            ${medIcon(i)}
             <div class="med-card__name">
               <h3>${esc(med.name)}</h3>
-              ${med.dose ? `<p class="muted">${esc(med.dose)}</p>` : ''}
+              <p class="muted">${esc(info)}</p>
             </div>
-            <p class="dose-big" aria-label="오늘 ${phase.pills}알"><strong>${phase.pills}</strong>알</p>
+            <div class="dose" aria-label="오늘 ${phase.pills}알">
+              <p class="dose-num"><strong>${phase.pills}</strong>알</p>
+              ${pillIcons(phase.pills)}
+            </div>
           </div>
-          <p class="phase-note">${esc(phaseText(med, phase))}${next ? ` · 다음: ${esc(next)}` : ''}</p>
+          ${next ? `<p class="next-chip">다음 · ${esc(next)}</p>` : ''}
           ${
             rec
               ? `<div class="taken-row">
-                  <span class="taken-mark" aria-hidden="true">✓</span>
-                  <span class="taken-text">${S.fmtPills(rec.pills)} 복용 완료${rec.at ? ` · ${esc(recordedText(rec, t))}` : ''}</span>
+                  <span class="stamp${ui.justTaken === med.id ? ' is-new' : ''}" aria-hidden="true">✓</span>
+                  <p class="taken-text"><strong>${S.fmtPills(rec.pills)} 먹었어요</strong>${rec.at ? `<span>${esc(recordedText(rec, t))}</span>` : ''}</p>
                   <button type="button" class="btn btn-small btn-quiet" data-action="undo" data-med="${med.id}" data-date="${t}">기록 취소</button>
                 </div>`
               : `<button type="button" class="btn btn-primary btn-block btn-tall" data-action="take" data-med="${med.id}" data-date="${t}">복용 기록하기</button>`
@@ -309,23 +370,20 @@
       .map(({ med, i }) => {
         const next = nextChangeText(med, t);
         const why = t < med.startDate ? `${S.fmtShort(med.startDate)} 시작` : next || '복용 종료';
-        return `<li>${medNo(i, true)}${esc(med.name)} <span class="muted">· 오늘은 안 먹어요 (${esc(why)})</span></li>`;
+        return `<li>${medIcon(i, true)}<span><strong>${esc(med.name)}</strong> <span class="muted">오늘은 쉬어요 · ${esc(why)}</span></span></li>`;
       })
       .join('');
 
     const memo = data.memos[t];
     return `
-      <section class="today-head${status === 'done' ? ' is-done' : ''}">
-        <p class="eyebrow">${S.fmtDate(t)} · ${S.fmtLong(t)}</p>
-        <h2>${headline}</h2>
-        ${
-          due.length
-            ? `<div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="${due.length}" aria-valuenow="${taken}" aria-label="오늘 복용 ${taken}/${due.length}">
-                <span style="width:${(taken / due.length) * 100}%"></span>
-              </div>
-              <p class="muted small">${taken} / ${due.length} 복용</p>`
-            : ''
-        }
+      <section class="hello${done ? ' is-done' : ''}">
+        <div class="hello-text">
+          <p class="hello-date">${S.fmtLong(t)}</p>
+          <h2>${done ? '오늘치 약 복용 완료!' : greeting()}</h2>
+          <p class="hello-sub">${sub}</p>
+          ${due.length ? `<div class="dots" role="img" aria-label="오늘 복용 ${taken}/${due.length}">${dots}</div>` : ''}
+        </div>
+        ${mascot(done ? 'happy' : due.length ? 'calm' : 'sleepy', 84)}
       </section>
       ${dueCards}
       ${restRows ? `<ul class="rest-list">${restRows}</ul>` : ''}
@@ -335,7 +393,7 @@
           <span id="memo-status" class="muted small">${memo && memo.updatedAt ? `저장됨 · ${esc(fmtTime(memo.updatedAt))}` : ''}</span>
         </div>
         <p class="hint">약을 먹은 뒤 느낌, 컨디션, 부작용 등을 적어 두세요. 쓰는 대로 저장돼요.</p>
-        <textarea id="today-memo" data-date="${t}" rows="5" placeholder="예) 아침 8시 복용. 오전에 조금 졸렸고 두통은 없었음.">${esc(memo ? memo.text : '')}</textarea>
+        <textarea id="today-memo" class="notebook" data-date="${t}" rows="5" placeholder="예) 아침 8시 복용. 오전에 조금 졸렸고 두통은 없었음.">${esc(memo ? memo.text : '')}</textarea>
       </section>`;
   }
 
@@ -367,12 +425,12 @@
     const perMed = data.meds
       .map((med, i) => {
         const p = periodText(med.startDate, S.endKeyOf(med), t);
-        return `<li>${medNo(i, true)}<span class="period-name">${esc(med.name)}</span><span class="muted">${p.range} · ${p.progress}</span></li>`;
+        return `<li>${medIcon(i, true)}<span class="period-name">${esc(med.name)}</span><span class="muted">${p.range} · ${p.progress}</span></li>`;
       })
       .join('');
     return `
       <section class="period">
-        <p class="period-total"><strong>총 복용 기간</strong> ${overall.range} · ${overall.progress}${dueDays ? ` · 완료 ${doneDays}/${dueDays}일` : ''}</p>
+        <p class="period-total"><span class="period-label">총 복용 기간</span>${overall.range} · ${overall.progress}${dueDays ? ` · 완료 ${doneDays}/${dueDays}일` : ''}</p>
         ${data.meds.length > 1 ? `<ul class="period-list">${perMed}</ul>` : ''}
       </section>`;
   }
@@ -397,7 +455,7 @@
         }
         return `
           <li class="detail-row">
-            <div class="detail-med">${medNo(i, true)}${esc(med.name)} <strong>${S.fmtPills(rec ? rec.pills : pills)}</strong></div>
+            <div class="detail-med">${medIcon(i, true)}${esc(med.name)} <strong>${S.fmtPills(rec ? rec.pills : pills)}</strong></div>
             <div class="detail-state">${state}</div>
           </li>`;
       })
@@ -477,7 +535,7 @@
       .reverse()
       .filter((k) => !q || data.memos[k].text.includes(q));
     if (!keys.length) {
-      return `<p class="empty muted">${q ? '찾는 글이 들어간 메모가 없어요.' : '아직 쓴 메모가 없어요. 오늘 화면에서 그날의 느낌을 적어 보세요.'}</p>`;
+      return `<div class="empty">${mascot('sleepy', 80)}<p class="muted">${q ? '찾는 글이 들어간 메모가 없어요.' : '아직 쓴 메모가 없어요.<br>오늘 화면에서 그날의 느낌을 적어 보세요.'}</p></div>`;
     }
     let html = '';
     let month = '';
@@ -494,7 +552,7 @@
           const due = S.pillsOn(med, k);
           const rec = log[med.id];
           if (!due && !rec) return '';
-          return `<span class="${rec ? 'ok' : ''}">${S.medLabel(i)} ${S.fmtPills(rec ? rec.pills : due)} ${rec ? '✓' : '·'}</span>`;
+          return `<span class="mini ${toneOf(i)}${rec ? ' ok' : ''}">${capsuleSvg()}${esc(med.name)} ${S.fmtPills(rec ? rec.pills : due)}${rec ? ' ✓' : ''}</span>`;
         })
         .filter(Boolean)
         .join('');
@@ -538,7 +596,7 @@
       .join('');
     return `
       <p class="preview-title">이렇게 복용해요</p>
-      <ol class="preview-list">${items}</ol>
+      <ol class="steps">${items}</ol>
       <p class="muted small">${esc(S.afterText(med))}</p>`;
   }
 
@@ -551,7 +609,7 @@
         (p, i) => `
         <div class="phase" data-index="${i}">
           <div class="phase-top">
-            <span class="phase-no">${i + 1}단계${i ? ' (그다음)' : ''}</span>
+            <span class="phase-no"><span class="step-no">${i + 1}</span>단계${i ? ' · 그다음' : ''}</span>
             ${d.phases.length > 1 ? `<button type="button" class="icon-btn small" data-action="remove-phase" data-index="${i}" aria-label="${i + 1}단계 지우기">×</button>` : ''}
           </div>
           <div class="phase-row">
@@ -572,13 +630,16 @@
       ${
         first
           ? `<section class="intro">
-              <h2>먼저 복용할 약을 등록해 주세요</h2>
-              <p>약 이름과 용량, 기간별로 하루 몇 알씩 먹는지 적어 두면 매일 먹을 개수를 알아서 알려 드려요.</p>
+              ${mascot('happy', 88)}
+              <div>
+                <h2>반가워요!</h2>
+                <p>먼저 복용할 약을 알려 주세요. 기간별로 하루 몇 알씩 먹는지 적어 두면 매일 먹을 개수를 알아서 알려 드릴게요.</p>
+              </div>
             </section>`
           : ''
       }
       <form id="med-form" class="card form" novalidate>
-        <h3>${editing ? '약 정보 고치기' : `${S.medLabel(data.meds.length)} 새 약 등록`}</h3>
+        <h3 class="form-title">${medIcon(editing ? medIndex(d.id) : data.meds.length)}${editing ? '약 정보 고치기' : '새 약 등록'}</h3>
         <label class="field">
           <span>약 이름</span>
           <input name="name" value="${esc(d.name)}" placeholder="예) 아침약" autocomplete="off" enterkeyhint="next">
@@ -630,15 +691,15 @@
         return `
           <article class="card med-item">
             <header>
-              ${medNo(i)}
+              ${medIcon(i)}
               <div>
                 <h3>${esc(med.name)}</h3>
                 ${med.dose ? `<p class="muted">${esc(med.dose)}</p>` : ''}
               </div>
             </header>
-            <ol class="routine">${ranges}</ol>
+            <ol class="steps">${ranges}</ol>
             <p class="muted small">${esc(S.afterText(med))}</p>
-            <p class="today-line">오늘: ${phase && phase.pills > 0 ? `하루 ${S.fmtPills(phase.pills)}` : '안 먹는 날'} · ${p.range} · ${p.progress}</p>
+            <p class="today-line"><span>오늘 ${phase && phase.pills > 0 ? `하루 ${S.fmtPills(phase.pills)}` : '안 먹는 날'}</span>${p.range} · ${p.progress}</p>
             <footer>
               <button type="button" class="btn btn-small btn-quiet danger" data-action="delete-med" data-med="${med.id}">삭제</button>
               <button type="button" class="btn btn-small" data-action="edit-med" data-med="${med.id}">고치기</button>
@@ -726,7 +787,7 @@
     const canShare = typeof navigator.share === 'function';
     return `
       <section class="card">
-        <h3>기록 요약 보내기</h3>
+        <h3><span class="h-emoji" aria-hidden="true">💌</span>기록 요약 보내기</h3>
         <p class="hint">약 루틴과 날짜별 복용·메모를 글로 정리해서 메일, 카카오톡, 메모 앱 등으로 보낼 수 있어요.</p>
         <div class="range">
           <label class="field"><span>시작</span><input type="date" id="ex-from" value="${from}"></label>
@@ -751,7 +812,7 @@
         </div>
       </section>
       <section class="card">
-        <h3>백업</h3>
+        <h3><span class="h-emoji" aria-hidden="true">🗂️</span>백업</h3>
         <p class="hint">기록은 서버가 아니라 이 기기의 브라우저에만 저장돼요. 폰을 바꾸거나 Safari 방문 기록·데이터를 지우면 사라질 수 있으니 가끔 백업 파일을 저장해 두세요.</p>
         <div class="btn-grid">
           <button type="button" class="btn" data-action="backup">백업 파일 저장</button>
